@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Extrair projeto
-        run: unzip -o Controle_de_Corte_Android_projeto.zip
+        run: unzip -o Controle_de_Corte_V21_Android.zip
 
       - uses: actions/setup-java@v4
         with:
