@@ -1,4 +1,5 @@
 name: Gerar APK
+
 on:
   workflow_dispatch:
   push:
@@ -18,12 +19,15 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v4
 
       - name: Instalar SDK
         run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
 
       - name: Compilar APK
         run: gradle --no-daemon :app:assembleDebug
@@ -32,3 +36,4 @@ jobs:
         with:
           name: Controle-de-Corte-APK
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
