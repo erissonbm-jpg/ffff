@@ -5,35 +5,97 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
-
-      - name: Extrair projeto
-        run: unzip -o Controle_de_Corte_V23_Android.zip
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v4
-
-      - name: Instalar SDK
-        run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+      - uses: android-actions/setup-android@v4
 
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
+      - name: Selecionar versao mais recente
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP=$(find . -maxdepth 1 -type f -name 'Controle_de_Corte_V*_Android.zip' -printf '%f\n' | sort -V | tail -n1)
+          if [[ -n "$ZIP" ]]; then
+            mkdir -p extracted
+            unzip -q "$ZIP" -d extracted
+            DIR="$GITHUB_WORKSPACE/extracted"
+            EXPECTED=$(echo "$ZIP" | sed -E 's/^Controle_de_Corte_V([0-9]+)_Android.zip$/\1/')
+          else
+            DIR="$GITHUB_WORKSPACE"
+            EXPECTED=$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]+([0-9]+).*/\1/p' "$DIR/app/build.gradle")
+          fi
+          ACTUAL=$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]+([0-9]+).*/\1/p' "$DIR/app/build.gradle")
+          [[ "$ACTUAL" =~ ^[0-9]+$ && "$ACTUAL" == "$EXPECTED" ]] || exit 1
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+          echo "APP_VERSION=$ACTUAL" >> "$GITHUB_ENV"
+
+      - name: Instalar SDK
+        run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+
       - name: Compilar APK
-        run: gradle --no-daemon :app:assembleDebug
+        shell: bash
+        env:
+          CC_KEYSTORE_BASE64: ${{ secrets.CC_KEYSTORE_BASE64 }}
+          CC_STORE_PASSWORD: ${{ secrets.CC_STORE_PASSWORD }}
+          CC_KEY_ALIAS: ${{ secrets.CC_KEY_ALIAS }}
+          CC_KEY_PASSWORD: ${{ secrets.CC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          if [[ -n "$CC_KEYSTORE_BASE64" && -n "$CC_STORE_PASSWORD" && -n "$CC_KEY_ALIAS" && -n "$CC_KEY_PASSWORD" ]]; then
+            export CC_KEYSTORE="$RUNNER_TEMP/controle-corte.jks"
+            umask 077
+            trap 'rm -f "$CC_KEYSTORE"' EXIT
+            printf '%s' "$CC_KEYSTORE_BASE64" | base64 -d > "$CC_KEYSTORE"
+            gradle --no-daemon :app:assembleRelease
+            APK=app/build/outputs/apk/release/app-release.apk
+            TYPE=permanente
+          elif [[ -n "$CC_KEYSTORE_BASE64$CC_STORE_PASSWORD$CC_KEY_ALIAS$CC_KEY_PASSWORD" ]]; then
+            echo "Assinatura incompleta"
+            exit 1
+          else
+            gradle --no-daemon :app:assembleDebug
+            APK=app/build/outputs/apk/debug/app-debug.apk
+            TYPE=teste
+          fi
+
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+
+          "$BT/aapt" dump badging "$APK" > "$RUNNER_TEMP/cc-badging.txt"
+
+          head -n 1 "$RUNNER_TEMP/cc-badging.txt" > "$RUNNER_TEMP/cc-version.txt"
+
+          grep -F "name='br.com.controlecorte' versionCode='$APP_VERSION' versionName='$APP_VERSION.0-android'" "$RUNNER_TEMP/cc-version.txt"
+
+          "$BT/apksigner" verify --print-certs "$APK" > "$RUNNER_TEMP/cc-signature.txt"
+
+          mkdir -p "$GITHUB_WORKSPACE/apk-output"
+
+          cp "$APK" "$GITHUB_WORKSPACE/apk-output/Controle-de-Corte-V$APP_VERSION-$TYPE.apk"
+
+          cp "$RUNNER_TEMP/cc-version.txt" "$RUNNER_TEMP/cc-signature.txt" "$GITHUB_WORKSPACE/apk-output/"
+
+          echo "APK_MODE=$TYPE" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Controle-de-Corte-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Controle-de-Corte-V${{ env.APP_VERSION }}-${{ env.APK_MODE }}
+          path: apk-output/
           if-no-files-found: error
